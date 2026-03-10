@@ -4,7 +4,7 @@ use fpush_traits::push::{PushError, PushResult, PushTrait};
 
 use async_trait::async_trait;
 use google_fcm1::{
-    api::{Message, SendMessageRequest},
+    api::{AndroidConfig, Message, Notification, SendMessageRequest},
     hyper_rustls, hyper_util, yup_oauth2, FirebaseCloudMessaging,
 };
 use log::{error, warn};
@@ -154,6 +154,15 @@ impl PushTrait for FpushFcm {
 fn create_push_message(token: String) -> Message {
     Message {
         data: Some(HashMap::new()),
+        notification: Some(Notification {
+            title: Some("XMPP Chat".to_string()),
+            body: Some("You have a new message".to_string()),
+            image: None,
+        }),
+        android: Some(AndroidConfig {
+            priority: Some("HIGH".to_string()),
+            ..Default::default()
+        }),
         token: Some(token),
         ..Default::default()
     }
