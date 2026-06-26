@@ -157,7 +157,7 @@ async fn handle_iq(conn: &mpsc::Sender<Iq>, push_modules: FpushPushArc, stanza: 
             // field only ever holds the dummy string), and is fail-safe: an unrecognised
             // payload is treated as important so a real notification is never dropped.
             if !is_important_push(&iq_payload) {
-                info!("Dropping unimportant push from {} (ghost suppression)", from);
+                debug!("Dropping unimportant push from {} (ghost suppression)", from);
                 send_ack_iq(conn, &iq.id, from, to).await;
                 return;
             }
