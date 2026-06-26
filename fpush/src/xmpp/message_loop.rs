@@ -157,7 +157,7 @@ async fn handle_iq(conn: &mpsc::Sender<Iq>, push_modules: FpushPushArc, stanza: 
             // field only ever holds the dummy string), and is fail-safe: an unrecognised
             // payload is treated as important so a real notification is never dropped.
             if !is_important_push(&iq_payload) {
-                debug!("Dropping unimportant push from {} (ghost suppression)", from);
+                info!("Dropping unimportant push from {} (ghost suppression)", from);
                 send_ack_iq(conn, &iq.id, from, to).await;
                 return;
             }
@@ -224,39 +224,26 @@ async fn handle_push_result(
 
 /// Whether a XEP-0357 push payload is for an "important" stanza (a real message,
 /// OMEMO, an incoming call) rather than an "unimportant" one (typing, receipts,
-/// markers, presence). `mod_cloud_notify` only adds a `last-message-body` data-form
-/// field and/or a `<priority>high</priority>` tag for important stanzas; neither
-/// carries message content. An unrecognised payload shape returns `true` (send), so
-/// a real notification is never silently dropped.
+/// markers, presence). `mod_cloud_notify` only adds, somewhere in the push payload,
+/// a `last-message-body` data-form field and/or a `<priority>` tag (from
+/// mod_cloud_notify_priority_tag) for important stanzas; unimportant pushes carry
+/// neither (just FORM_TYPE + message-count). Neither marker contains message
+/// content — the body field only ever holds the dummy "New Message!" string.
+///
+/// We search the whole subtree for these markers rather than navigating an exact
+/// nesting, so it's robust to how the pubsub/item/notification elements are wrapped.
 fn is_important_push(payload: &Element) -> bool {
-    const NS_PUBSUB: &str = "http://jabber.org/protocol/pubsub";
-    const NS_PUSH: &str = "urn:xmpp:push:0";
-    const NS_PRIORITY: &str = "tigase:push:priority:0";
-    const NS_XDATA: &str = "jabber:x:data";
-
-    // payload is the <pubsub> element: pubsub > publish > item > notification.
-    let notification = payload
-        .get_child("publish", NS_PUBSUB)
-        .and_then(|p| p.get_child("item", NS_PUBSUB))
-        .and_then(|i| i.get_child("notification", NS_PUSH));
-
-    let notification = match notification {
-        Some(n) => n,
-        None => return true, // unknown shape -> fail safe, send it
-    };
-
-    // priority_tag marks important pushes with <priority>high</priority>.
-    if notification.get_child("priority", NS_PRIORITY).is_some() {
-        return true;
+    fn has_marker(el: &Element) -> bool {
+        let name = el.name();
+        if name == "priority" {
+            return true;
+        }
+        if name == "field" && el.attr("var") == Some("last-message-body") {
+            return true;
+        }
+        el.children().any(has_marker)
     }
-
-    // mod_cloud_notify sets a last-message-body data-form field for important pushes.
-    match notification.get_child("x", NS_XDATA) {
-        Some(x) => x
-            .children()
-            .any(|c| c.is("field", NS_XDATA) && c.attr("var") == Some("last-message-body")),
-        None => true, // notification without a data form is unusual -> send it
-    }
+    has_marker(payload)
 }
 
 #[inline(always)]
