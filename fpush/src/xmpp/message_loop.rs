@@ -156,11 +156,7 @@ async fn handle_iq(conn: &mpsc::Sender<Iq>, push_modules: FpushPushArc, stanza: 
             // unimportant ones have neither. This decision uses no message content (the body
             // field only ever holds the dummy string), and is fail-safe: an unrecognised
             // payload is treated as important so a real notification is never dropped.
-            let important = is_important_push(&iq_payload);
-            // TEMP DIAGNOSTIC: dump every push payload + decision so we can see the real
-            // structure of a ghost push and fix the importance detection. Remove after.
-            info!("PUSHDBG important={} payload={:#?}", important, iq_payload);
-            if !important {
+            if !is_important_push(&iq_payload) {
                 info!("Dropping unimportant push from {} (ghost suppression)", from);
                 send_ack_iq(conn, &iq.id, from, to).await;
                 return;
@@ -228,26 +224,27 @@ async fn handle_push_result(
 
 /// Whether a XEP-0357 push payload is for an "important" stanza (a real message,
 /// OMEMO, an incoming call) rather than an "unimportant" one (typing, receipts,
-/// markers, presence). `mod_cloud_notify` only adds, somewhere in the push payload,
-/// a `last-message-body` data-form field and/or a `<priority>` tag (from
-/// mod_cloud_notify_priority_tag) for important stanzas; unimportant pushes carry
-/// neither (just FORM_TYPE + message-count). Neither marker contains message
-/// content — the body field only ever holds the dummy "New Message!" string.
+/// markers, presence).
 ///
-/// We search the whole subtree for these markers rather than navigating an exact
-/// nesting, so it's robust to how the pubsub/item/notification elements are wrapped.
+/// On this server (Snikket / mod_cloud_notify + extensions) every push carries the
+/// summary data-form with FORM_TYPE, message-count (always "1"), last-message-sender
+/// and last-message-body fields — so field *presence* tells us nothing. The
+/// distinguisher is the **value**: mod_cloud_notify only populates `last-message-body`
+/// (with the dummy "New Message!" string — no real content) for important stanzas;
+/// for unimportant ones the field is present but empty (`<field var="last-message-body"/>`).
+///
+/// So: important iff a `last-message-body` field anywhere in the payload has a
+/// non-empty `<value>`. Searching the whole subtree keeps it robust to wrapping.
 fn is_important_push(payload: &Element) -> bool {
-    fn has_marker(el: &Element) -> bool {
-        let name = el.name();
-        if name == "priority" {
-            return true;
+    fn check(el: &Element) -> bool {
+        if el.name() == "field" && el.attr("var") == Some("last-message-body") {
+            return el
+                .children()
+                .any(|v| v.name() == "value" && !v.text().trim().is_empty());
         }
-        if name == "field" && el.attr("var") == Some("last-message-body") {
-            return true;
-        }
-        el.children().any(has_marker)
+        el.children().any(check)
     }
-    has_marker(payload)
+    check(payload)
 }
 
 #[inline(always)]
