@@ -156,7 +156,11 @@ async fn handle_iq(conn: &mpsc::Sender<Iq>, push_modules: FpushPushArc, stanza: 
             // unimportant ones have neither. This decision uses no message content (the body
             // field only ever holds the dummy string), and is fail-safe: an unrecognised
             // payload is treated as important so a real notification is never dropped.
-            if !is_important_push(&iq_payload) {
+            let important = is_important_push(&iq_payload);
+            // TEMP DIAGNOSTIC: dump every push payload + decision so we can see the real
+            // structure of a ghost push and fix the importance detection. Remove after.
+            info!("PUSHDBG important={} payload={:#?}", important, iq_payload);
+            if !important {
                 info!("Dropping unimportant push from {} (ghost suppression)", from);
                 send_ack_iq(conn, &iq.id, from, to).await;
                 return;
