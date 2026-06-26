@@ -148,6 +148,19 @@ async fn handle_iq(conn: &mpsc::Sender<Iq>, push_modules: FpushPushArc, stanza: 
                     return;
                 }
             };
+            // Suppress "ghost" notifications: mod_cloud_notify pushes for unimportant
+            // stanzas too (chat states, receipts, read markers, presence), and fpush would
+            // otherwise turn each into a generic "You have a new message". Important stanzas
+            // (real messages, OMEMO, incoming calls) are flagged in the push payload with a
+            // `last-message-body` data-form field and/or a <priority>high</priority> tag;
+            // unimportant ones have neither. This decision uses no message content (the body
+            // field only ever holds the dummy string), and is fail-safe: an unrecognised
+            // payload is treated as important so a real notification is never dropped.
+            if !is_important_push(&iq_payload) {
+                debug!("Dropping unimportant push from {} (ghost suppression)", from);
+                send_ack_iq(conn, &iq.id, from, to).await;
+                return;
+            }
             let (module_id, token) = match parse_token_and_module_id(iq_payload) {
                 Ok((module_id, token)) => (module_id, token),
                 Err(e) => {
@@ -206,6 +219,43 @@ async fn handle_push_result(
             );
             send_error_iq(conn, &iq_id, from, to).await;
         }
+    }
+}
+
+/// Whether a XEP-0357 push payload is for an "important" stanza (a real message,
+/// OMEMO, an incoming call) rather than an "unimportant" one (typing, receipts,
+/// markers, presence). `mod_cloud_notify` only adds a `last-message-body` data-form
+/// field and/or a `<priority>high</priority>` tag for important stanzas; neither
+/// carries message content. An unrecognised payload shape returns `true` (send), so
+/// a real notification is never silently dropped.
+fn is_important_push(payload: &Element) -> bool {
+    const NS_PUBSUB: &str = "http://jabber.org/protocol/pubsub";
+    const NS_PUSH: &str = "urn:xmpp:push:0";
+    const NS_PRIORITY: &str = "tigase:push:priority:0";
+    const NS_XDATA: &str = "jabber:x:data";
+
+    // payload is the <pubsub> element: pubsub > publish > item > notification.
+    let notification = payload
+        .get_child("publish", NS_PUBSUB)
+        .and_then(|p| p.get_child("item", NS_PUBSUB))
+        .and_then(|i| i.get_child("notification", NS_PUSH));
+
+    let notification = match notification {
+        Some(n) => n,
+        None => return true, // unknown shape -> fail safe, send it
+    };
+
+    // priority_tag marks important pushes with <priority>high</priority>.
+    if notification.get_child("priority", NS_PRIORITY).is_some() {
+        return true;
+    }
+
+    // mod_cloud_notify sets a last-message-body data-form field for important pushes.
+    match notification.get_child("x", NS_XDATA) {
+        Some(x) => x
+            .children()
+            .any(|c| c.is("field", NS_XDATA) && c.attr("var") == Some("last-message-body")),
+        None => true, // notification without a data form is unusual -> send it
     }
 }
 
